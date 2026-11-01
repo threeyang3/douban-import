@@ -1,0 +1,113 @@
+import I18nHelper, {i18nHelper} from "../i18n/helper";
+import {Platform, Setting} from "obsidian";
+import {DEFAULT_SETTINGS} from "./defaults";
+import SettingsManager from "./SettingsManager";
+import DoubanLoginModel from "../ui/modals/DoubanLoginModel";
+import DoubanLogoutModel from "../ui/modals/DoubanLogoutModel";
+import User from "../sources/douban/auth/User";
+import {createFolderSelectionSetting} from "../templates/TemplateSettingHelper";
+import StringUtil from "../shared/StringUtil";
+import {log} from "../shared/Logutil";
+import DoubanPlugin from "../main";
+import {SearchTypeRecords, SupportType, SupportTypeMap} from "../shared/constants";
+
+export function constructBasicUI(containerEl: HTMLElement, manager: SettingsManager) {
+	new Setting(containerEl).setName(i18nHelper.getMessage('120501')).then((setting) => {
+		setting.addMomentFormat((mf) => {
+			setting.descEl.appendChild(
+				createFragment((frag) => {
+					frag.appendText(
+						i18nHelper.getMessage('120503')
+					);
+					frag.createEl('br');
+					frag.appendText(i18nHelper.getMessage('120506') + ' ');
+					frag.createEl(
+						'a',
+						{
+							text: i18nHelper.getMessage('120508'),
+							href: 'https://momentjs.com/docs/#/displaying/format/',
+						},
+						(a) => {
+							a.setAttr('target', '_blank');
+						}
+					);
+					frag.createEl('br');
+					frag.appendText(i18nHelper.getMessage('120507') + ': ');
+					mf.setSampleEl(frag.createEl('b', {cls: 'u-pop'}));
+					frag.createEl('br');
+				})
+			);
+			mf.setPlaceholder(DEFAULT_SETTINGS.dateFormat);
+			mf.setValue(manager.plugin.settings.dateFormat)
+			mf.onChange(async (value) => {
+				manager.plugin.settings.dateFormat = value;
+				await manager.plugin.saveSettings();
+			});
+
+		});
+	});
+
+	new Setting(containerEl).setName(i18nHelper.getMessage('120502')).then((setting) => {
+		setting.addMomentFormat((mf) => {
+			setting.descEl.appendChild(
+				createFragment((frag) => {
+					frag.appendText(
+						i18nHelper.getMessage('120504')
+					);
+					frag.createEl('br');
+					frag.appendText(i18nHelper.getMessage('120506') + ' ');
+					frag.createEl(
+						'a',
+						{
+							text: i18nHelper.getMessage('120508'),
+							href: 'https://momentjs.com/docs/#/displaying/format/',
+						},
+						(a) => {
+							a.setAttr('target', '_blank');
+						}
+					);
+					frag.createEl('br');
+					frag.appendText(i18nHelper.getMessage('120507') + ': ');
+					mf.setSampleEl(frag.createEl('b', {cls: 'u-pop'}));
+					frag.createEl('br');
+				})
+			);
+			mf.setPlaceholder(DEFAULT_SETTINGS.timeFormat);
+			mf.setValue(manager.plugin.settings.timeFormat)
+			mf.onChange(async (value) => {
+				manager.plugin.settings.timeFormat = value;
+				await manager.plugin.saveSettings();
+			});
+
+		});
+	});
+
+	new Setting(containerEl)
+		.setName(i18nHelper.getMessage('121401'))
+		.setDesc(i18nHelper.getMessage('121402'))
+		.addToggle((toggleComponent) => {
+			toggleComponent
+				// .setTooltip(i18nHelper.getMessage('121403'))
+				.setValue(manager.plugin.settings.statusBar)
+				.onChange(async (value) => {
+					manager.plugin.settings.statusBar = value;
+					await manager.plugin.saveSettings();
+				});
+		});
+
+	new Setting(containerEl)
+		.setName(i18nHelper.getMessage('121410'))
+		.setDesc(i18nHelper.getMessage('121411'))
+		.addDropdown((dropdown) => {
+			dropdown
+				.addOptions(SearchTypeRecords)
+				.setValue(manager.plugin.settings.searchDefaultType)
+				.onChange(async (value) => {
+					// @ts-ignore
+					manager.plugin.settings.searchDefaultType = SupportTypeMap[value];
+					await manager.plugin.saveSettings();
+				});
+		});
+
+}
+

@@ -1,0 +1,19 @@
+import {SupportType} from "../../../../shared/constants";
+import {SearchResultPageParserInterface} from "./SearchResultPageParserInterface";
+import {log} from "../../../../shared/Logutil";
+import {SearchPage} from "../../models/SearchPage";
+import SearchParserHandler from "../SearchParser";
+
+export class NotAllPageSearchResultPageParser implements SearchResultPageParserInterface {
+	support(type:SupportType, pageNum:number):boolean {
+		return type != SupportType.all && !(pageNum ==1 && type == SupportType.note);
+	}
+	parse(source:string, type:SupportType, pageNum:number, pageSize:number):SearchPage {
+		log.debug("解析给多页面结果");
+		if (!source) {
+			return new SearchPage(0, 0, 0, type, []);
+		}
+		return SearchParserHandler.parseSearchJson(source, type, pageNum);
+	}
+
+}

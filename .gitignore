@@ -1,0 +1,11 @@
+node_modules
+main.js
+*.map
+data.json
+.DS_Store
+.vscode/
+.idea/
+*.iml
+doc/.vitepress/dist/
+doc/.vitepress/cache/
+coverage/

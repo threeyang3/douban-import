@@ -1,0 +1,216 @@
+import {CheerioAPI} from "cheerio";
+import DoubanAbstractLoadHandler from "./DoubanAbstractLoadHandler";
+import DoubanPlugin from "../../../main";
+import DoubanSubject from "../models/DoubanSubject";
+import DoubanTeleplaySubject from "../models/DoubanTeleplaySubject";
+import SchemaOrg from "../../../shared/SchemaOrg";
+import HandleContext from "../models/HandleContext";
+import {DataValueType, PersonNameMode, PropertyName, SupportType} from "../../../shared/constants";
+import {UserStateSubject} from "../models/UserStateSubject";
+import {moment} from "obsidian";
+import {TITLE_ALIASES_SPECIAL_CHAR_REG_G} from "../../../shared/YamlUtil";
+import {DataField} from "../../../shared/models/DataField";
+import DoubanPageParser from "../parsing/DoubanPageParser";
+
+/**
+ * teleplay
+ */
+export class DoubanTeleplayLoadHandler extends DoubanAbstractLoadHandler<DoubanTeleplaySubject> {
+
+	constructor(doubanPlugin: DoubanPlugin) {
+		super(doubanPlugin);
+	}
+
+	getSupportType(): SupportType {
+		return SupportType.teleplay;
+	}
+
+	parseVariable(beforeContent: string, variableMap:Map<string, DataField>, extract: DoubanTeleplaySubject, context: HandleContext): void {
+		variableMap.set("director", new DataField("director", DataValueType.array, extract.director,(extract.director || []).map(SchemaOrg.getPersonName).filter(c => c)));
+		variableMap.set("actor", new DataField(
+			"actor",
+			DataValueType.array,
+			extract.actor,
+			(extract.actor || []).map(SchemaOrg.getPersonName).filter(c => c)
+		));
+
+		variableMap.set("author", new DataField(
+			"author",
+			DataValueType.array,
+			extract.author,
+			(extract.author || []).map(SchemaOrg.getPersonName).map(name => super.getPersonName(name, context)).filter(c => c)
+		));
+		variableMap.set("aliases", new DataField("aliases", DataValueType.array, extract.aliases,
+			(extract.aliases || []).map(a=>a
+					.trim()
+				// 		.replace(TITLE_ALIASES_SPECIAL_CHAR_REG_G, '_')
+				// 		//replase multiple _ to single _
+				// 		.replace(/_+/g, '_')
+				// 		.replace(/^_/, '')
+				// 		.replace(/_$/, '')
+				.replace(/:\s+/g, ':')
+			)));
+		// super.parseAliases(beforeContent, variableMap, extract, context);
+	}
+
+	support(extract: DoubanSubject): boolean {
+		return extract && extract.type && (extract.type.contains("电视剧") || extract.type.contains("Teleplay") || extract.type.contains("teleplay"));
+	}
+	getHighQuantityImageUrl(fileName:string):string{
+		return `https://img9.doubanio.com/view/photo/l/public/${fileName}`;
+	}
+
+	getSubjectUrl(id:string):string{
+		return `https://movie.douban.com/subject/${id}/`;
+	}
+
+	analysisUser(html: CheerioAPI, context: HandleContext): {data:CheerioAPI ,  userState: UserStateSubject} {
+		const rate = html('input#n_rating').val();
+		const tags = DoubanPageParser.parseUserTags(html);
+		const stateWord = html('div#interest_sect_level > div.a_stars > span.mr10').text().trim();
+		const collectionDateStr = html('div#interest_sect_level > div.a_stars > span.mr10 > span.collection_date').text().trim();
+		const userState1 = DoubanAbstractLoadHandler.getUserState(stateWord);
+		const component = DoubanPageParser.parseUserComment(
+			html,
+			this.doubanPlugin.settingsManager.getSelector(this.getSupportType(), PropertyName.comment),
+		);
+
+		const userState: UserStateSubject = {
+			tags: tags,
+			rate: rate?Number(rate):null,
+			state: userState1,
+			collectionDate: collectionDateStr?moment(collectionDateStr, 'YYYY-MM-DD').toDate():null,
+			comment: component
+		}
+		return {data: html, userState: userState};
+	}
+
+	parseSubjectFromHtml(html: CheerioAPI, context: HandleContext): DoubanTeleplaySubject {
+		let teleplay: DoubanTeleplaySubject | undefined = html('script')
+			.get()
+			.filter(scd => "application/ld+json" == html(scd).attr("type"))
+			.map(i => {
+				let item = html(i).text();
+				item = super.html_decode(item);
+				const obj = JSON.parse(item.replace(/[\r\n\t]+/g, ''));
+				const idPattern = /(\d){5,10}/g;
+				const id = idPattern.exec(obj.url);
+				const name = obj.name;
+				const title = super.getTitleNameByMode(name, PersonNameMode.CH_NAME, context)??name;
+				const originalTitle =  super.getTitleNameByMode(name, PersonNameMode.EN_NAME, context) ?? name;
+
+				const result: DoubanTeleplaySubject = {
+					id: id ? id[0] : '',
+					type: this.getSupportType(),
+					title: title,
+					originalTitle: originalTitle,
+					desc: obj.description,
+					url: "https://movie.douban.com" + obj.url,
+					director: obj.director || [],
+					author: obj.author || [],
+					actor: obj.actor || [],
+					aggregateRating: obj.aggregateRating,
+					datePublished: obj.datePublished ? new Date(obj.datePublished) : undefined,
+					image: obj.image,
+					imageUrl: obj.image,
+					genre: obj.genre || [],
+					score: obj.aggregateRating ? obj.aggregateRating.ratingValue : undefined,
+					publisher: "",
+					aliases: [""],
+					language: [""],
+					country: [],
+					episode: null,
+					time: null,
+					IMDb: null,
+				}
+				return result;
+			})[0];
+
+		// Fallback: if JSON-LD parsing failed, extract from meta tags
+		if (!teleplay) {
+			const title = html(html("head > meta[property='og:title']").get(0)).attr("content") || '';
+			const image = html(html("head > meta[property='og:image']").get(0)).attr("content") || '';
+			const urlMeta = html(html("head > meta[property='og:url']").get(0)).attr("content") || '';
+			const desc = html(html("head > meta[property='og:description']").get(0)).attr("content") || '';
+
+			const idPattern = /(\d){5,10}/g;
+			const idMatch = idPattern.exec(urlMeta);
+			const id = idMatch ? idMatch[0] : '';
+
+			const scoreText = html("#interest_sectl strong[property='v:average']").text();
+			const score = scoreText ? parseFloat(scoreText) : undefined;
+
+			teleplay = {
+				id,
+				title,
+				type: this.getSupportType(),
+				score,
+				originalTitle: title,
+				desc,
+				url: urlMeta || (id ? `https://movie.douban.com/subject/${id}/` : ''),
+				director: [],
+				author: [],
+				actor: [],
+				aggregateRating: undefined,
+				datePublished: undefined,
+				image,
+				imageUrl: image,
+				genre: [],
+				publisher: '',
+				aliases: [],
+				language: [],
+				country: [],
+				episode: null,
+				time: null,
+				IMDb: null,
+			};
+		}
+
+		this.handlePersonNameByMeta(html, teleplay,  context, 'video:actor', 'actor');
+		this.handlePersonNameByMeta(html, teleplay,  context, 'video:director', 'director');
+		const desc = DoubanPageParser.extractLongestText(html, [
+			"[id^='link-report'] span.all.hidden",
+			"#link-report .all.hidden",
+			"span[property='v:summary']",
+		]);
+		if (desc) {
+			teleplay.desc = desc;
+		}
+
+		const detailDom = html(html("#info").get(0));
+		const publish = detailDom.find("span.pl");
+
+		const valueMap = new Map<string, any>();
+
+		publish.map((index, info) => {
+			const key = html(info).text().trim();
+			let value;
+			if (key.indexOf('又名') >= 0 || key.indexOf('语言') >= 0 || key.indexOf('制片国家') >= 0) {
+				// value = html(info.next.next).text().trim();
+				const vas = html(info.next).text().trim();
+				value = vas.split("/").map((v) => v.trim());
+			}else {
+				value = html(info.next).text().trim();
+			}
+			valueMap.set(TeleplayKeyValueMap.get(key), value);
+		})
+		teleplay.country =  valueMap.has('country') ? valueMap.get('country') : [];
+		teleplay.language =  valueMap.has('language') ? valueMap.get('language') : [];
+		teleplay.episode =  valueMap.has('episode') ? valueMap.get('episode') : "";
+		teleplay.time =  valueMap.has('time') ? valueMap.get('time') : "";
+		teleplay.aliases =  valueMap.has('aliases') ? valueMap.get('aliases') : [];
+		teleplay.IMDb =  valueMap.has('IMDb') ? valueMap.get('IMDb') : "";
+		return teleplay;
+	}
+
+}
+
+const TeleplayKeyValueMap: Map<string, string> = new Map(
+	[['制片国家/地区:', 'country'],
+		['语言:', 'language'],
+		['集数:', 'episode'],
+		['单集片长:', 'time'],
+		['又名:', 'aliases'],
+		['IMDb:', 'IMDb']
+	]
+);

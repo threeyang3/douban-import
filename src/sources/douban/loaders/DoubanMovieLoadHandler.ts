@@ -1,0 +1,231 @@
+import {CheerioAPI} from 'cheerio';
+import DoubanAbstractLoadHandler from "./DoubanAbstractLoadHandler";
+import DoubanPlugin from "../../../main";
+import SchemaOrg from "../../../shared/SchemaOrg";
+import DoubanSubject from '../models/DoubanSubject';
+import DoubanMovieSubject from '../models/DoubanMovieSubject';
+import StringUtil from "../../../shared/StringUtil";
+import HandleContext from "../models/HandleContext";
+import {DataValueType, PersonNameMode, PropertyName, SupportType, TemplateKey} from "../../../shared/constants";
+import {UserStateSubject} from "../models/UserStateSubject";
+import {moment} from "obsidian";
+import YamlUtil, {TITLE_ALIASES_SPECIAL_CHAR_REG_G} from "../../../shared/YamlUtil";
+import {DataField} from "../../../shared/models/DataField";
+import DoubanPageParser from "../parsing/DoubanPageParser";
+
+export default class DoubanMovieLoadHandler extends DoubanAbstractLoadHandler<DoubanMovieSubject> {
+
+	constructor(doubanPlugin: DoubanPlugin) {
+		super(doubanPlugin);
+	}
+
+	getSupportType(): SupportType {
+		return SupportType.movie;
+	}
+
+	getHighQuantityImageUrl(fileName:string):string{
+		return `https://img9.doubanio.com/view/photo/l/public/${fileName}`;
+	}
+
+	getSubjectUrl(id:string):string{
+		return `https://movie.douban.com/subject/${id}/`;
+	}
+
+	parseVariable(beforeContent: string, variableMap:Map<string, DataField>, extract: DoubanMovieSubject, context: HandleContext): void {
+		variableMap.set("director", new DataField(
+			"director",
+			DataValueType.array,
+			extract.director,
+			(extract.director || []).map(SchemaOrg.getPersonName).filter(c => c)
+		));
+
+		variableMap.set("actor", new DataField(
+			"actor",
+			DataValueType.array,
+			extract.actor,
+			(extract.actor || []).map(SchemaOrg.getPersonName).filter(c => c)
+		));
+
+		variableMap.set("author", new DataField(
+			"author",
+			DataValueType.array,
+			extract.author,
+			(extract.author || []).map(SchemaOrg.getPersonName).map(name => super.getPersonName(name, context)).filter(c => c)
+		));
+		variableMap.set("aliases", new DataField("aliases", DataValueType.array, extract.aliases,
+			(extract.aliases || []).map(a=>a
+					.trim()
+				// 		.replace(TITLE_ALIASES_SPECIAL_CHAR_REG_G, '_')
+				// 		//replase multiple _ to single _
+				// 		.replace(/_+/g, '_')
+				// 		.replace(/^_/, '')
+				// 		.replace(/_$/, '')
+				.replace(/:\s+/g, ':')
+			)));
+		// super.parseAliases(beforeContent, variableMap, extract, context);
+		}
+
+	support(extract: DoubanSubject): boolean {
+		return extract && extract.type && (extract.type.contains("电影") || extract.type.contains("Movie") || extract.type.contains("movie"));
+	}
+
+	analysisUser(html: CheerioAPI, context: HandleContext): {data:CheerioAPI ,  userState: UserStateSubject} {
+		let rate = html('input#n_rating').val();
+		let tags = DoubanPageParser.parseUserTags(html);
+		let stateWord = html('div#interest_sect_level > div.a_stars > span.mr10').text().trim();
+		let collectionDateStr = html('div#interest_sect_level > div.a_stars > span.mr10 > span.collection_date').text().trim();
+		let userState1 = DoubanAbstractLoadHandler.getUserState(stateWord);
+		let component = this.getComment(html, context);
+
+
+		const userState: UserStateSubject = {
+			tags: tags,
+			rate: rate?Number(rate):null,
+			state: userState1,
+			collectionDate: collectionDateStr?moment(collectionDateStr, 'YYYY-MM-DD').toDate():null,
+			comment: component
+		}
+		return {data: html, userState: userState};
+	}
+
+
+	private getComment(html: CheerioAPI, context: HandleContext) {
+		const comment = DoubanPageParser.parseUserComment(
+			html,
+			this.doubanPlugin.settingsManager.getSelector(this.getSupportType(), PropertyName.comment),
+		);
+		return this.filterCommentText(comment);
+	}
+
+	parseSubjectFromHtml(html: CheerioAPI, context: HandleContext): DoubanMovieSubject {
+		let movie: DoubanMovieSubject | undefined = html('script')
+			.get()
+			.filter(scd => "application/ld+json" == html(scd).attr("type"))
+			.map(i => {
+				let item = html(i).text();
+				item = super.html_decode(item);
+				const obj = JSON.parse(item.replace(/[\r\n\t]+/g, ''));
+				const idPattern = /(\d){5,10}/g;
+				const id = idPattern.exec(obj.url);
+				const name = obj.name;
+				const title = super.getTitleNameByMode(name, PersonNameMode.CH_NAME, context) ?? name;
+				const originalTitle = super.getTitleNameByMode(name, PersonNameMode.EN_NAME, context) ?? name;
+
+				const result: DoubanMovieSubject = {
+					id: id ? id[0] : '',
+					title: title,
+					type: this.getSupportType(),
+					score: obj.aggregateRating ? obj.aggregateRating.ratingValue : undefined,
+					originalTitle: originalTitle,
+					desc: obj.description,
+					url: "https://movie.douban.com" + obj.url,
+					director: obj.director || [],
+					author: obj.author || [],
+					actor: obj.actor || [],
+					aggregateRating: obj.aggregateRating,
+					datePublished: obj.datePublished ? new Date(obj.datePublished) : undefined,
+					image: obj.image,
+					imageUrl: obj.image,
+					genre: obj.genre || [],
+					publisher: '',
+					aliases: [""],
+					language: [""],
+					country: [],
+					time: null,
+					IMDb: null,
+				}
+				return result;
+			})[0];
+
+		// Fallback: if JSON-LD parsing failed (e.g., anti-bot page), extract from meta tags
+		if (!movie) {
+			const title = html(html("head > meta[property='og:title']").get(0)).attr("content") || '';
+			const image = html(html("head > meta[property='og:image']").get(0)).attr("content") || '';
+			const urlMeta = html(html("head > meta[property='og:url']").get(0)).attr("content") || '';
+			const desc = html(html("head > meta[property='og:description']").get(0)).attr("content") || '';
+
+			// Extract ID from URL
+			const idPattern = /(\d){5,10}/g;
+			const idMatch = idPattern.exec(urlMeta);
+			const id = idMatch ? idMatch[0] : '';
+
+			// Extract score from HTML
+			const scoreText = html("#interest_sectl strong[property='v:average']").text();
+			const score = scoreText ? parseFloat(scoreText) : undefined;
+
+			movie = {
+				id,
+				title,
+				type: this.getSupportType(),
+				score,
+				originalTitle: title,
+				desc,
+				url: urlMeta || (id ? `https://movie.douban.com/subject/${id}/` : ''),
+				director: [],
+				author: [],
+				actor: [],
+				aggregateRating: undefined,
+				datePublished: undefined,
+				image,
+				imageUrl: image,
+				genre: [],
+				publisher: '',
+				aliases: [],
+				language: [],
+				country: [],
+				time: null,
+				IMDb: null,
+			};
+		}
+
+		this.handlePersonNameByMeta(html, movie, context, 'video:actor', 'actor');
+		this.handlePersonNameByMeta(html, movie, context, 'video:director', 'director');
+
+		const desc = DoubanPageParser.extractLongestText(html, [
+			"[id^='link-report'] span.all.hidden",
+			"#link-report .all.hidden",
+			"span[property='v:summary']",
+		]);
+		if (desc) {
+			movie.desc = desc;
+		}
+
+		const detailDom = html(html("#info").get(0));
+		const publish = detailDom.find("span.pl");
+
+		const valueMap = new Map<string, any>();
+
+		publish.map((index, info) => {
+			const key = html(info).text().trim();
+			let value;
+			if (key.indexOf('又名') >= 0 || key.indexOf('语言') >= 0 || key.indexOf('制片国家') >= 0) {
+				// value = html(info.next.next).text().trim();
+				const vas = html(info.next).text().trim();
+				value = vas.split("/").map((v) => v.trim());
+			} else if (key.indexOf('片长') >= 0) {
+				value = html(info.next.next).text().trim()
+			} else {
+				value = html(info.next).text().trim();
+			}
+			valueMap.set(MovieKeyValueMap.get(key), value);
+		})
+
+		movie.country = valueMap.has('country') ? valueMap.get('country') : [];
+		movie.language = valueMap.has('language') ? valueMap.get('language') : [];
+		movie.time = valueMap.has('time') ? valueMap.get('time') : "";
+		movie.aliases = valueMap.has('aliases') ? valueMap.get('aliases') : [];
+		movie.IMDb = valueMap.has('IMDb') ? valueMap.get('IMDb') : "";
+		return movie;
+	}
+
+
+}
+
+const MovieKeyValueMap: Map<string, string> = new Map(
+	[['制片国家/地区:', 'country'],
+		['语言:', 'language'],
+		['片长:', 'time'],
+		['又名:', 'aliases'],
+		['IMDb:', 'IMDb']
+	]
+);

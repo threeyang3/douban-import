@@ -1,0 +1,74 @@
+import {CustomProperty} from "./CustomProperty";
+import {SyncHandledData} from "./SyncHandledData";
+import {ArraySetting} from "./ArraySetting";
+import {ScoreSetting} from "./ScoreSetting";
+import PictureBedSetting from "./PictureBedSetting";
+import {SupportType} from "../../shared/constants";
+import {DataProtectionSettings} from "../../userdata/types";
+import {ArrayLengthLimit} from "./ArrayLengthLimit";
+
+export type TemplateSource = 'builtin' | 'file' | 'custom';
+
+export interface TemplateConfig {
+	source: TemplateSource;
+	filePath?: string;
+	customContent?: string;
+}
+
+export interface DoubanPluginSetting {
+	onlineSettingsFileName: string;
+	onlineSettingsGistId: string;
+	movieTemplateFile: string,
+	bookTemplateFile: string,
+	musicTemplateFile: string,
+	noteTemplateFile: string,
+	gameTemplateFile: string,
+	teleplayTemplateFile: string,
+	theaterTemplateFile: string,
+	movieTemplateConfig?: TemplateConfig,
+	bookTemplateConfig?: TemplateConfig,
+	musicTemplateConfig?: TemplateConfig,
+	noteTemplateConfig?: TemplateConfig,
+	gameTemplateConfig?: TemplateConfig,
+	teleplayTemplateConfig?: TemplateConfig,
+	theaterTemplateConfig?: TemplateConfig,
+	dateFormat: string,
+	timeFormat: string,
+	searchUrl: string,
+	arrayStart: string,
+	arrayElementStart: string,
+	arraySpiltV2: string,
+	arrayElementEnd: string,
+	arrayEnd: string,
+	personNameMode: string,
+	dataFilePath: string,
+	dataFileNamePath: string,
+	statusBar: boolean,
+	debugMode: boolean,
+	customProperties: CustomProperty[],
+	loginCookiesContent: string,
+	loginHeadersContent: string,
+	cacheImage: boolean,
+	cacheHighQuantityImage: boolean,
+		overwriteCoverImage: boolean,
+	showAfterCreate: boolean,
+	attachmentPath: string,
+	attachmentFileName: string,
+	pictureBedFlag: boolean
+	pictureBedType: string;
+	pictureBedSetting: PictureBedSetting;
+	syncHandledDataArray: SyncHandledData[],
+	// syncLastUpdateTime: Map<string, string>,
+	arraySettings: ArraySetting[],
+	scoreSetting: ScoreSetting,
+	searchDefaultType: SupportType,
+	templatePresetPaths?: Record<string, string>,
+	notePathTemplate: string,
+	noteTemplateContent: string,
+	noteDefaultFolder: string,
+	dataProtection: DataProtectionSettings,
+	syncBackupBeforeReplace: boolean,
+	syncBackupFolder: string,
+	includeSensitiveInSettingExport: boolean,
+	arrayLengthLimits: ArrayLengthLimit[],
+}

@@ -1,0 +1,428 @@
+import SettingsManager from "../settings/SettingsManager";
+import {ArraySetting, DEFAULT_SETTINGS_ARRAY_NAME} from "../settings/model/ArraySetting";
+import StringUtil from "./StringUtil";
+import YamlUtil from "./YamlUtil";
+import {log} from "./Logutil";
+import {i18nHelper} from "../i18n/helper";
+import {DataValueType, SupportType} from "./constants";
+import {DataField} from "./models/DataField";
+import {FieldVariable} from "./models/FieldVariable";
+import {CustomProperty} from "../settings/model/CustomProperty";
+import {FileUtil} from "./FileUtil";
+import {ArrayLengthLimit} from "../settings/model/ArrayLengthLimit";
+
+type TargetType = 'text' | 'path' | 'yml_text';
+
+
+export class VariableUtil {
+
+
+
+	/**
+
+	 *
+	 * @param obj
+	 * @param content
+	 * @param subjectType
+	 * @param settingManager
+	 * @param targetType
+	 */
+
+	static replaceSubject(obj: any, content: string, subjectType: SupportType, settingManager:SettingsManager, targetType: TargetType): string {
+		if (!content || !obj) {
+			return content;
+		}
+		const allVariables = this.getAllVariables(content, settingManager);
+		if (!allVariables || allVariables.length == 0) {
+			return content;
+		}
+		const map = obj instanceof Map ? obj : this.objToMap(obj);
+		this.applyArrayLengthLimits(subjectType, map, settingManager);
+		this.handleCustomVariable(subjectType, map, settingManager, 'text');
+		content = this.replaceMap(map, allVariables, content, settingManager, targetType);
+		return content;
+	}
+
+	/**
+
+	 *
+	 * @param obj
+	 * @param content
+	 * @param settingManager
+	 * @param targetType
+	 */
+
+	static replace(obj: any, content: string, settingManager:SettingsManager, targetType : TargetType): string {
+		if (!content || !obj) {
+			return content;
+		}
+		const allVariables = this.getAllVariables(content, settingManager);
+		if (!allVariables || allVariables.length == 0) {
+			return content;
+		}
+		const map = obj instanceof Map ? obj : this.objToMap(obj);
+		content = this.replaceMap(map, allVariables, content, settingManager, targetType);
+
+		return content;
+	}
+
+	/**
+	 * <h3>type</h3>
+	 * <li>Number</li>
+	 * <li>String</li>
+	 * <li>Array</li>
+	 *
+	 * <h3>name</h3>
+	 * <li> aliases</li>
+	 * @param variable
+	 * @param value
+	 * @param content
+	 * @param settingManager
+	 * @param targetType
+	 */
+	static replaceVariable(variable: FieldVariable, value: any, content: string, settingManager:SettingsManager, targetType: TargetType): string {
+		if (!content) {
+			return content;
+		}
+		//根据value的类型，替换对应的变量
+		if (value instanceof Array) {
+			content = this.replaceArray(variable, value, content, settingManager, targetType);
+		} else if(value instanceof DataField) {
+			content = this.replaceDataField(variable, value, content, settingManager, targetType);
+		} else {
+			content = this.replaceString(variable, value, value, content, settingManager, targetType);
+		}
+		return content;
+	}
+
+	static replaceArray(variable: FieldVariable, value: any[], content: string, settingManager:SettingsManager, targetType: TargetType): string {
+		if (!content) {
+			return content;
+		}
+		const variableStr = variable.variable;
+		const outTypeName = variable.outTypeName;
+		if (!value) {
+			return content.replaceAll(variableStr, "");
+		}
+		// 当变量被 [[ ]] 包裹时（wiki link），使用内联格式，不添加 YAML 引号
+		const wikiLinkPattern = `[[${variableStr}]]`;
+		const isWikiLink = content.includes(wikiLinkPattern);
+		let arraySettings = this.getArraySetting(outTypeName, settingManager);
+		if (!arraySettings) {
+			log.warn(i18nHelper.getMessage(`130107`, variable.variable, outTypeName));
+			return content;
+		}
+
+		// 正文上下文（表格单元格内）使用内联格式，避免换行破坏 Markdown 表格
+		// menu 需要在正文中以列表形式呈现，跳过内联转换
+		if (targetType === 'text' && variable.key !== 'menu') {
+			arraySettings = {
+				...arraySettings,
+				arrayElementStart: '',
+				arrayElementEnd: '',
+				arraySpiltV2: '、',
+				arrayStart: '',
+				arrayEnd: '',
+			};
+		}
+
+		// menu 在正文中使用 Markdown 列表格式
+		if (targetType === 'text' && variable.key === 'menu') {
+			arraySettings = {
+				arrayName: 'menu',
+				arrayElementStart: '- ',
+				arrayElementEnd: '',
+				arraySpiltV2: '\n',
+				arrayStart: '',
+				arrayEnd: '',
+				index: 0,
+			};
+		}
+
+		const strValues:string[] = value.map((v) => {
+			if (typeof v === 'string') {
+				return v;
+			} else {
+				return v?v.toString() : null;
+			}
+		})
+			.filter(v => v)
+			.map(v => isWikiLink ? v : this.handleText(v, targetType))
+		;
+		let arrayValue = StringUtil.handleArray(strValues, arraySettings);
+		// menu 在 callout 中需要为每行添加 > 前缀
+		if (targetType === 'text' && variable.key === 'menu' && arrayValue) {
+			arrayValue = arrayValue.replace(/\n/g, '\n> ');
+		}
+		if (isWikiLink) {
+			content = content.replaceAll(wikiLinkPattern, `[[${arrayValue}]]`);
+		} else {
+			content = content.replaceAll(variableStr, arrayValue);
+		}
+		return content;
+	}
+
+	static keyToVariable(key: string): string {
+		return `{{${key}}}`;
+	}
+
+	static replaceString(variable: FieldVariable, valueField: DataField, value: any, content: string, settingManager:SettingsManager, targetType: TargetType): string {
+		if (!content) {
+			return content;
+		}
+		let strValue = value?  value.toString() : "";
+		// 当变量被 [[ ]] 包裹时（wiki link），不添加 YAML 引号，Obsidian frontmatter 能直接识别
+		const wikiLinkPattern = `[[${variable.variable}]]`;
+		if (content.includes(wikiLinkPattern)) {
+			return content.replaceAll(wikiLinkPattern, `[[${strValue}]]`);
+		}
+		if (targetType === 'text' && variable.key === 'image' && strValue) {
+			content = this.replaceMarkdownImagePaths(content, variable.variable, strValue);
+		}
+		return content.replaceAll(variable.variable, this.handleText(strValue, targetType, valueField));
+	}
+
+	/**
+	 * 从key中提取 arrayName, 然后从settings中获取对应的ArraySetting
+	 * @private
+	 * @param content
+	 * @param settingManager
+	 */
+	private static getAllVariables(content: string, settingManager:SettingsManager): FieldVariable[] {
+		const reg =/\{\{[a-zA-Z0-9_.\-]+([(a-zA-Z0-9)]+)?}}/g
+		const result = content.match(reg);
+		if (!result) {
+			return [];
+		}
+		return result.map((v) => {
+			const reg2 = new RegExp(`[a-zA-Z0-9_.\\-]+`, 'g');
+			const result2 = v.match(reg2);
+			if (!result2) {
+				return null;
+			}
+			if (result2.length == 1) {
+				return new FieldVariable(result2[0],  v,  null);
+			}
+			return new FieldVariable(result2[0], v, result2[1]);
+		}).filter(v => v);
+	}
+
+	/**
+	 * 从key中提取 arrayName, 然后从settings中获取对应的ArraySetting
+	 * @param outTypeName
+	 * @param settingManager
+	 * @private
+	 */
+	private static getArraySetting(outTypeName: string, settingManager:SettingsManager): ArraySetting {
+		if (!outTypeName) {
+			return settingManager.getArraySetting(DEFAULT_SETTINGS_ARRAY_NAME);
+		} else {
+			return settingManager.getArraySetting(outTypeName);
+		}
+	}
+
+
+	private static replaceMap(obj: Map<string, any>, allVariables:FieldVariable[], content: string, settingManager: SettingsManager, targetType: TargetType) {
+		content = this.replaceConditionals(obj, content);
+		allVariables.forEach(variable => {
+			const value = obj.get(variable.key);
+			content = this.replaceVariable(variable, value, content, settingManager, targetType);
+		});
+		return content;
+	}
+
+	/**
+	 * 处理 {{#if variable}}...{{/if}} 条件渲染
+	 * 变量存在且非空时保留内容，否则移除整个块
+	 */
+	private static replaceConditionals(obj: Map<string, any>, content: string): string {
+		if (!content) {
+			return content;
+		}
+		const conditionalRegex = /\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g;
+		return content.replace(conditionalRegex, (_match, key, block) => {
+			const value = obj.get(key);
+			if (value === undefined || value === null || value === '') {
+				return '';
+			}
+			if (Array.isArray(value) && value.length === 0) {
+				return '';
+			}
+			return block;
+		});
+	}
+
+	static getType(value: any):DataValueType {
+		if (typeof value === 'number') {
+			return DataValueType.number;
+		} else if (typeof value === 'string') {
+			if (value.startsWith('http://') || value.startsWith('https://')) {
+				return DataValueType.url;
+			}else if (/^(\/|\.\/|\.\.\/|~\/|.*\.[a-zA-Z0-9]+$)/.test(value)) {
+				return DataValueType.path;
+			}
+			return DataValueType.string;
+		} else if (value instanceof Date) {
+			return DataValueType.date;
+		} else if (value instanceof Array) {
+			return DataValueType.array;
+		} else {
+			return DataValueType.string;
+		}
+	}
+
+	private static replaceDataField(variable: FieldVariable, value: DataField, content: string, settingManager: SettingsManager, targetType: TargetType) {
+		if (!content) {
+			return content;
+		}
+		const variableStr = variable.variable;
+		if (!value) {
+			return content.replaceAll(variableStr, "");
+		}
+		switch (value.type) {
+			case DataValueType.string:
+				content = this.replaceString(variable, value, value.value, content, settingManager, targetType);
+				break;
+			case DataValueType.number:
+				content = content.replaceAll(variableStr, this.handleText(value.value.toString(), targetType, value));
+				break;
+			case DataValueType.date:
+				content = content.replaceAll(variableStr,  this.handleText(value.value, targetType, value));
+				break;
+			case DataValueType.array:
+				content = this.replaceArray(variable, value.value, content, settingManager, targetType);
+				break;
+			default:
+				if (targetType === 'text' && variable.key === 'image' && value.value) {
+					content = this.replaceMarkdownImagePaths(content, variableStr, String(value.value));
+				}
+				content = content.replaceAll(variableStr,  this.handleText(value.value, targetType, value));
+				break;
+
+		}
+
+		return content;
+	}
+
+	private static replaceMarkdownImagePaths(content: string, variable: string, value: string): string {
+		const escapedVariable = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		const imageTargetRegex = new RegExp(
+			`(\\]\\(\\s*<?)${escapedVariable}(>?\\s*(?:"[^"]*"|'[^']*')?\\s*\\))`,
+			'g',
+		);
+		const encodedPath = FileUtil.toMarkdownLinkPath(value);
+		return content.replace(imageTargetRegex, `$1${encodedPath}$2`);
+	}
+
+	static applyArrayLengthLimits(
+		subjectType: SupportType,
+		variableMap: Map<string, DataField>,
+		settingManager: SettingsManager,
+	): void {
+		if (!variableMap?.size) {
+			return;
+		}
+		const limits = settingManager.getSetting('arrayLengthLimits') as ArrayLengthLimit[];
+		if (!Array.isArray(limits) || limits.length === 0) {
+			return;
+		}
+
+		const currentType = String(subjectType || '').toLowerCase();
+		const effectiveLimits = new Map<string, number>();
+		limits.forEach(limit => {
+			const field = String(limit?.field || '').trim().toLowerCase();
+			const type = String(limit?.type || '').toLowerCase();
+			const value = Number(limit?.limit);
+			if (!field || !Number.isInteger(value) || value <= 0) {
+				return;
+			}
+			if (type !== SupportType.all && type !== currentType) {
+				return;
+			}
+			const existing = effectiveLimits.get(field);
+			if (existing == null || value < existing) {
+				effectiveLimits.set(field, value);
+			}
+		});
+		if (effectiveLimits.size === 0) {
+			return;
+		}
+
+		variableMap.forEach((dataField, key) => {
+			if (!(dataField instanceof DataField) || !Array.isArray(dataField.value)) {
+				return;
+			}
+			const limit = effectiveLimits.get(key.toLowerCase());
+			if (limit == null || dataField.value.length <= limit) {
+				return;
+			}
+			variableMap.set(key, new DataField(
+				dataField.name,
+				dataField.type,
+				dataField.origin,
+				dataField.value.slice(0, limit),
+			));
+		});
+	}
+
+	/**
+	 * 处理自定义参数
+	 * @private
+	 * @param subjectType
+	 * @param variableMap
+	 * @param settingMananger
+	 * @param targetType
+	 */
+	static handleCustomVariable(subjectType: SupportType, variableMap:Map<string, DataField>, settingMananger: SettingsManager, targetType:TargetType): void {
+		// @ts-ignore
+		const customProperties: CustomProperty[] = settingMananger.getSetting('customProperties');
+		if (!customProperties) {
+			return ;
+		}
+		const customPropertiesMap= new Map();
+		customProperties.filter(customProperty => customProperty.name &&
+			customProperty.field
+			&& (customProperty.field.toLowerCase() == SupportType.all ||
+				customProperty.field.toLowerCase() == subjectType)).forEach(customProperty => {
+			customPropertiesMap.set(customProperty.name, customProperty.value);
+		});
+		customPropertiesMap.forEach((value, key) => {
+			variableMap.set(key,
+				new DataField(
+					key, DataValueType.string, value,
+					VariableUtil.replace(variableMap, value, settingMananger, targetType)));
+		})
+	}
+
+	private static objToMap(obj: any):Map<string, any> {
+		const map = new Map<string, any>();
+		Object.keys(obj).forEach(key => {
+			map.set(key, obj[key]);
+		});
+		return map;
+	}
+
+	private static handleText(v: string, targetType: TargetType, dataField: DataField = null): string {
+		if (targetType === 'yml_text') {
+			return YamlUtil.handleText(v, dataField);
+		}
+		if (targetType === 'text') {
+			// desc 在正文中以 callout 形式呈现，需要规范化文本并添加 > 前缀
+			if (dataField && dataField.name === 'desc' && v) {
+				// 去除全角空格
+				v = v.replace(/[　]/g, '');
+				// 去除每行首尾空白，并过滤掉纯空白行
+				v = v.split('\n')
+					.map(line => line.trim())
+					.filter(line => line.length > 0)
+					.join('\n');
+				// 为每行添加 > 前缀以保持 callout 格式
+				return v.replaceAll('\n', '\n> ');
+			}
+			return  v;
+		}
+		if (targetType === 'path') {
+			return FileUtil.replaceSpecialCharactersForFileName(v);
+		}
+	}
+}

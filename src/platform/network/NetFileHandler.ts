@@ -1,0 +1,122 @@
+import { requestUrl, RequestUrlParam} from "obsidian";
+import {log} from "../../shared/Logutil";
+import {i18nHelper} from "../../i18n/helper";
+import FileHandler from "../vault/FileHandler";
+import {FileUtil} from "../../shared/FileUtil";
+import HandleContext from "../../sources/douban/models/HandleContext";
+import HttpUtil from "./HttpUtil";
+import {ClipboardUtil} from "../../shared/ClipboardUtil";
+import {ResultI} from "../../shared/models/Result";
+
+export default class NetFileHandler {
+	private fileHandler: FileHandler;
+
+	constructor(fileHandler: FileHandler) {
+		this.fileHandler = fileHandler;
+	}
+
+	async downloadDBFile(url: string, folder:string, filename: string, context:HandleContext, showError:boolean, headers?:any, overwrite: boolean = false): Promise<{ success: boolean, error:string, filepath: string }> {
+		const filePath:string = FileUtil.join(folder, filename);
+			return HttpUtil.httpRequestBuffer(url, headers, context.plugin.settingsManager)
+				.then((response) => {
+					if (response.status == 404) {
+						throw new Error(i18nHelper.getMessage('130404'));
+					}
+					if (response.status == 403) {
+						throw new Error(i18nHelper.getMessage('130106'));
+					}
+					if (response.status == 418) {
+						throw new Error(i18nHelper.getMessage('130105'));
+					}
+					return response.textArrayBuffer;
+				})
+			.then(async (buffer) => {
+				if (!buffer || buffer.byteLength == 0) {
+					return 0;
+				}
+				await this.fileHandler.creatAttachmentWithData(filePath, buffer, overwrite);
+				return buffer.byteLength;
+			}).then((size) => {
+				if (size == 0) {
+					return {success: false, size: size, error: '文件为空', filepath: null};
+				}
+				return {success: true, size: size, error: '', filepath: filePath};
+			})
+			.catch(e => {
+				if (showError) {
+					log
+						.error(
+							i18nHelper.getMessage('130101')
+								.replace('{0}',  e.toString())
+							, e);
+				}else {
+					console.error(e);
+				}
+				return {success: false, error: String(e), filepath: null};
+			});
+		;
+	}
+
+	async downloadDBUploadPicGoByClipboard(url: string, filename: string, context:HandleContext, showError:boolean, headers?:any): Promise<{ success: boolean, error:string, filepath: string }> {
+		return HttpUtil.httpRequestBuffer(url, headers, context.plugin.settingsManager)
+			.then((response) => {
+				if (response.status == 404) {
+					throw new Error(i18nHelper.getMessage('130404'));
+				}
+				if (response.status == 403) {
+					throw new Error(i18nHelper.getMessage('130106'));
+				}
+				if (response.status == 418) {
+					throw new Error(i18nHelper.getMessage('130105'));
+				}
+				return response.textArrayBuffer;
+			})
+				.then(async (buffer) => {
+					if (!buffer || buffer.byteLength == 0) {
+						throw new Error(i18nHelper.getMessage('130109'));
+					}
+					await ClipboardUtil.writeImage(buffer);
+					return await this.uploadClipboardFile(context);
+			}).then((data) => {
+				if (data.success) {
+					return {success: true, error: '', filepath: HttpUtil.extractURLFromString(data.result[0])};
+				}else {
+					throw new Error('图片上传图床失败,使用原始图片地址，错误消息:' + data.message)
+				}
+			})
+			.catch(e => {
+				if (showError) {
+					return log
+						.error(
+							i18nHelper.getMessage('130101')
+								.replace('{0}',  e.toString())
+							, e);
+				}else {
+					console.error(e);
+				}
+			});
+		;
+	}
+
+
+	async uploadClipboardFile(context:HandleContext): Promise<ResultI> {
+		const response = await HttpUtil.httpRequest(
+			context.settings.pictureBedSetting.url, {}, context.plugin.settingsManager, {method: "post"});
+		const data = response.textJson as ResultI;
+		return data;
+	}
+
+	async downloadDBUploadPicGoByClipboardBefore(context: HandleContext) {
+		//临时限定只支持PicGo
+		try {
+			const response = await HttpUtil.httpRequest(
+				HttpUtil.replaceUrlPath(context.settings.pictureBedSetting.url, '/heartbeat'), {}, context.plugin.settingsManager, {method: "post"});
+			const data = response.textJson as ResultI;
+			return data? data.success: false;
+		}catch (e) {
+			return false;
+		}
+
+	}
+}
+

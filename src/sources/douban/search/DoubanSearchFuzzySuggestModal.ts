@@ -1,0 +1,153 @@
+import {
+	DoubanSearchGroupPublishResultSubjectNextPage,
+	DoubanSearchGroupPublishResultSubjectPreviousPage,
+	DoubanSearchResultSubject_EMPTY, DoubanSearchResultSubject_TIP_EMPTY,
+	DoubanSearchResultSubjectNextPage,
+	DoubanSearchResultSubjectNextPageNeedLogin,
+	DoubanSearchResultSubjectPreviousPage,
+	NavigateType,
+	SEARCH_ITEM_PAGE_SIZE,
+	SupportType
+} from "../../../shared/constants";
+import {FuzzySuggestModal, RequestUrlParam, request} from "obsidian";
+
+import DoubanPlugin from "../../../main";
+import DoubanSearchResultSubject from "../models/DoubanSearchResultSubject";
+import HandleContext from "../models/HandleContext";
+import {SearchPage} from "../models/SearchPage";
+import {SearchPageInfo} from "../models/SearchPageInfo";
+import {i18nHelper} from "../../../i18n/helper";
+import {log} from "../../../shared/Logutil";
+import SearcherV2 from "./SearchV2";
+
+export {DoubanFuzzySuggester}
+
+
+class DoubanFuzzySuggester extends FuzzySuggestModal<DoubanSearchResultSubject> {
+
+	private plugin: DoubanPlugin;
+	private doubanSearchResultExtract: DoubanSearchResultSubject[];
+	private context: HandleContext;
+	private searchItem:string;
+
+	constructor(plugin: DoubanPlugin, context: HandleContext, searchItem:string) {
+		super(plugin.app);
+		this.plugin = plugin;
+		this.context = context;
+		this.searchItem = searchItem;
+		this.setPlaceholder(i18nHelper.getMessage('150101'));
+	}
+
+
+	getItems(): DoubanSearchResultSubject[] {
+		return this.doubanSearchResultExtract;
+	}
+
+	getItemText(item: DoubanSearchResultSubject): string {
+		if (this.isNavigate(item)) {
+			return item.title;
+		}
+		let text: string = item.type + "/" + (item.score ? item.score : '-') + "/" + item.title + "/" + item.cast;
+		return text;
+	}
+
+	private isNavigate(item: DoubanSearchResultSubject) {
+		return item.type == "navigate";
+	}
+
+	async onChooseItem(item: DoubanSearchResultSubject, evt: MouseEvent | KeyboardEvent):Promise<void>  {
+		if(this.isNavigate(item)) {
+			if (await this.handleNavigate(item)) {
+				this.start();
+			}
+			return;
+		}
+		this.plugin.showStatus(i18nHelper.getMessage('140204', item.title));
+		this.context.listItem = item;
+		if (item) {
+			this.plugin.settingsManager.debug(`选择了:${item.type}:${item.id}:${item.title}`)
+		}
+		this.plugin.doubanExtractHandler.handle(item, this.context);
+	}
+
+	async handleNavigate(item: DoubanSearchResultSubject):Promise<boolean> {
+		const {searchPage} = this.context;
+		let currentPage:SearchPageInfo = searchPage;
+		let result:boolean = false;
+		switch (item.url) {
+			case NavigateType.previous:
+				currentPage = searchPage.previousPage();
+				result = true;
+				break;
+			case NavigateType.next:
+				currentPage = searchPage.nextPage();
+				result = true;
+				break;
+			case NavigateType.nextNeedLogin:
+				log.warn(i18nHelper.getMessage("140304"));
+				break;
+		}
+		if (result) {
+			const searchPageResult: SearchPage =
+				await SearcherV2.search(this.searchItem, currentPage.type, currentPage.pageNum, SEARCH_ITEM_PAGE_SIZE, this.plugin.settings, this.plugin.settingsManager);
+			this.context.searchPage = searchPageResult;
+			this.updatePageResult(searchPageResult);
+		}
+		return result;
+	}
+
+	private updatePageResult(searchPageResult: SearchPage) {
+		this.initItems(searchPageResult);
+
+	}
+
+
+
+	public showSearchPage(searchPage: SearchPage) {
+		this.initItems(searchPage);
+		this.start();
+	}
+
+	private initItems(searchPage: SearchPage) {
+		const doubanList: DoubanSearchResultSubject[] = searchPage.list;
+
+		if (searchPage.type == SupportType.all && searchPage.pageNum == 1) {
+			if (doubanList.length == 0) {
+				// if (searchPage.list.length > 0) {
+				doubanList.push(DoubanSearchResultSubject_EMPTY);
+			}else if (searchPage.list.length < SEARCH_ITEM_PAGE_SIZE) {
+				doubanList.push(DoubanSearchResultSubject_TIP_EMPTY);
+			}
+		}
+		if (searchPage.hasNext) {
+			if (this.plugin.userComponent.isLogin()) {
+				if (searchPage.type == SupportType.all && searchPage.pageNum == 1) {
+					doubanList.push(DoubanSearchGroupPublishResultSubjectNextPage)
+				}else {
+					doubanList.push(DoubanSearchResultSubjectNextPage)
+				}
+			}else {
+				doubanList.push(DoubanSearchResultSubjectNextPageNeedLogin)
+			}
+		}
+		if (searchPage.hasPrevious) {
+			if (searchPage.type == SupportType.all && searchPage.pageNum == 2) {
+				doubanList.unshift(DoubanSearchGroupPublishResultSubjectPreviousPage)
+			}else {
+				doubanList.unshift(DoubanSearchResultSubjectPreviousPage);
+			}
+		}
+		this.doubanSearchResultExtract = doubanList;
+
+	}
+
+
+	public start(): void {
+		try {
+			this.open();
+		} catch (e) {
+			log.error(e.toString(), e);
+		}
+	}
+
+}
